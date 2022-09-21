@@ -1,9 +1,11 @@
-from itertools import islice
+from copy import deepcopy
 from functools import partial
+from itertools import islice
 
 import torch
 
 from argparser import get_args
+from eval import save_conllu
 from trainer import Trainer
 
 
@@ -38,9 +40,8 @@ def train(conf):
             tag_pred, loss = model(batch, tag_true=tag_true)
             unsort_idx = torch.sort(sort_idx)[1]
             for l, true, pred in zip(
-                    sorted_len[unsort_idx],
-                    tag_pred[unsort_idx],
-                    tag_true[unsort_idx]):
+                sorted_len[unsort_idx], tag_pred[unsort_idx], tag_true[unsort_idx]
+            ):
                 t.score.add(pred[:l], true[:l])
         return t.score.current
 
@@ -51,9 +52,8 @@ def train(conf):
                 tag_pred, loss = model(batch, tag_true=tag_true)
                 unsort_idx = torch.sort(sort_idx)[1]
                 for l, true, pred in zip(
-                        sorted_len[unsort_idx],
-                        tag_pred[unsort_idx],
-                        tag_true[unsort_idx]):
+                    sorted_len[unsort_idx], tag_pred[unsort_idx], tag_true[unsort_idx]
+                ):
                     t.score[lang].add(pred[:l], true[:l])
         return t.avg_score.current
 
@@ -85,6 +85,7 @@ def test(conf, model=None):
         model = t.model
 
     if t.data.is_multilingual:
+
         def do_test(*args, **kwargs):
             for lang, ds in t.data.iter_test:
                 for batch in ds:
@@ -92,26 +93,53 @@ def test(conf, model=None):
                     tag_pred, loss = model(batch, tag_true=tag_true)
                     unsort_idx = torch.sort(sort_idx)[1]
                     for l, true, pred in zip(
-                            sorted_len[unsort_idx],
-                            tag_pred[unsort_idx],
-                            tag_true[unsort_idx]):
+                        sorted_len[unsort_idx],
+                        tag_pred[unsort_idx],
+                        tag_true[unsort_idx],
+                    ):
                         t.score[lang].add(pred[:l], true[:l])
             return t.avg_score.current
+
     else:
+
         def do_test(*args, **kwargs):
-            for batch in islice(
-                    t.main_lang_data.iter_test, conf.max_eval_inst):
+            preds = []
+            trues = []
+            for batch in islice(t.main_lang_data.iter_test, conf.max_eval_inst):
                 sorted_len, sort_idx, tag_true = batch["token"][1:4]
                 tag_pred, loss = model(batch, tag_true=tag_true)
                 unsort_idx = torch.sort(sort_idx)[1]
                 for l, true, pred in zip(
-                        sorted_len[unsort_idx],
-                        tag_pred[unsort_idx],
-                        tag_true[unsort_idx]):
+                    sorted_len[unsort_idx], tag_pred[unsort_idx], tag_true[unsort_idx]
+                ):
                     t.score.add(pred[:l], true[:l])
-            return t.score.current
+                    preds.append(pred[:l])
+                    trues.append(true[:l])
+            return (t.score.current, preds, trues)
 
-    score = t.do_eval(do_test, eval_ds_name="test")
+    score, preds, trues = t.do_eval(do_test, eval_ds_name="test")
+
+    test_dataset = deepcopy(t.data.test_raw)
+    a = deepcopy(test_dataset)
+    diff = 0
+    i = 0
+    for sent, sent_pred, sent_true in zip(test_dataset, preds, trues):
+        sent_pred = t.data.tag_enc.inverse_transform(sent_pred)
+        sent_true = t.data.tag_enc.inverse_transform(sent_true)
+        j = 0
+        for token, pred_tag, gold_tag in zip(sent, sent_pred, sent_true):
+            # Someday I will understand this
+            test_dataset[i][j]["upos"] = gold_tag
+            if pred_tag != gold_tag:
+                diff += 1
+                t.log.info("{} - {}".format(pred_tag, gold_tag))
+            j += 1
+        i += 1
+    t.log.info("Total diff tokens: {}".format(diff))
+    t.log.info("---- {}".format(a == test_dataset))
+    save_conllu(t.data.test_raw, rundir=".", eval_name="gold")
+    save_conllu(test_dataset, rundir=".", eval_name="pred")
+
     if t.data.is_multilingual:
         avg_score = score
         lang_scores = t.score

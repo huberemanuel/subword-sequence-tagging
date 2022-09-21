@@ -1,12 +1,13 @@
 from copy import deepcopy
+from pathlib import Path
 
 # from scripts.conll17_ud_eval import (
 #     load_conllu_file, evaluate as conll2017_eval)
 
 
 def save_conllu(sents, rundir, eval_name):
-    outfile = rundir / f"{eval_name}.conllu"
-    with outfile.open("w") as out:
+    outfile = Path(rundir).joinpath(f"{eval_name}.conllu")
+    with open(outfile, "w") as out:
         out.write("".join(sent.serialize() for sent in sents))
     return outfile
 
